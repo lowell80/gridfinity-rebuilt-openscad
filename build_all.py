@@ -5,7 +5,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from subprocess import call
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, Iterator, List
+
+from jinja2 import environment
 
 
 OPENSCAD_BIN = "/Applications/OpenSCAD.app/Contents/MacOS/OpenSCAD"
@@ -58,9 +60,16 @@ class Factor:
 
     def __iter__(self):
         if isinstance(self.values, CmdGenerator):
-            return (path for path, _, _ in self.values.build_commands())
+            return (res.path for res in self.values.build_commands())
         else:
             return iter(self.values)
+
+
+@dataclass
+class CmdGeneratorResult:
+    path: Path
+    cmd_args: list[str]
+    meta: dict
 
 
 @dataclass
@@ -73,7 +82,7 @@ class CmdGenerator:
     def product(self):
         return itertools.product(*(factor for factor in self.factors))
 
-    def build_commands(self):
+    def build_commands(self) -> Iterator[CmdGeneratorResult]:
         for combos in self.product():
             path = self.init_path
             cmd_args = self.cmd.copy()
@@ -86,7 +95,7 @@ class CmdGenerator:
                 cmd_args = factor.rewrite_args(cmd_args, value)
             path = path.with_suffix(self.path_suffix)
             path, cmd_args, meta = self.finalize_command(path, cmd_args, meta)
-            yield path, cmd_args, meta
+            yield CmdGeneratorResult(path, cmd_args, meta)
 
     @staticmethod
     def finalize_command(path, cmd_args: list[str], meta):
@@ -166,6 +175,11 @@ scad_gen = CmdGenerator(
     path_suffix=".stl"
 )
 
+# Jinja2
+stl_template = "output/models/{{ base }}-{{ lip }}/bin-{{ base_size }}-{{ height }}h-{{ base }}-{{ lip }}.stl"
+gcode_dir_template = "output/gcode/{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}"
+# Actual file name isn't known until after render....  (no easy way to know without parsing stdout or building into a fresh temp directory.... )
+
 
 """
 
@@ -211,23 +225,22 @@ slicer_gen = CmdGenerator(
 )
 
 
-for i, (path, cmd_args, meta) in enumerate(
-        scad_gen.build_commands(), 1):
-    parent: Path = path.parent
+for i, result in enumerate(scad_gen.build_commands(), 1):
+    parent: Path = result.path.parent
     if not parent.is_dir():
         parent.mkdir(parents=True)
 
     # if "lite" in str(cmd_args):
-    if path.is_file():
-        print(f"[{i}]  {path} already exists!")
+    if result.path.is_file():
+        print(f"[{i}]  {result.path} already exists!")
     else:
-        print(f"[{i}] {' '.join(cmd_args)}")
-        call(cmd_args)
+        print(f"[{i}] {' '.join(result.cmd_args)}")
+        call(result.cmd_args)
 
 
-for i, (path, cmd_args, meta) in enumerate(slicer_gen.build_commands(), 1):
-    if not path.is_dir():
-        path.mkdir(parents=True)
+for i, result in enumerate(slicer_gen.build_commands(), 1):
+    if not result.path.is_dir():
+        result.path.mkdir(parents=True)
 
-    print(f"[{i}] {' '.join(cmd_args)}")
-    call(cmd_args)
+    print(f"[{i}] {' '.join(result.cmd_args)}")
+    call(result.cmd_args)
