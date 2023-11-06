@@ -190,11 +190,64 @@ style_hole=
 """
 
 
-def run_for_series(cmd_generator: CmdGenerator, check_exists=False):
+scad_base_gen = CmdGenerator(
+    [
+        OPENSCAD_BIN,
+        "--export-format=binstl",
+        "--enable", "fast-csg",
+        "-o", "{{ stl_path }}",
+        "gridfinity-rebuilt-baseplate.scad",
+    ],
+    [
+        Factor("size",
+               expand_xy(1, 5, ((5, 5),)),
+               to_command=lambda value: ["-D", f"gridx={value[0]}",
+                                         "-D", f"gridy={value[1]}"],
+               to_meta=lambda value: f"{value[0]}x{value[1]}",
+               ),
+        # [0: thin, 1:weighted, 2:skeletonized, 3: screw together, 4: screw together minimal]
+
+        Factor("plate",
+               (0, 1, 2, 3),
+               to_command=openscad_arg("style_plate"),
+               to_meta=lambda v: {0: "thin",
+                                  1: "weighted",
+                                  2: "skeletonized",
+                                  3: "screw-together",
+                                  4: "screw-together-minimal"}[v]
+               ),
+        Factor("magnet",
+               ("true", ),  # The only style where false may make sense is (1) weighted
+               to_command=openscad_arg("enable_magnet"),
+               to_meta=lambda v: {
+                   "true": "magnet",
+                   "false": "nomag"}[v],
+               ),
+        # style_hole = 2; // [0:none, 1:contersink, 2:counterbore]
+        Factor("hole",
+               (0,),
+               to_command=openscad_arg("style_hole"),
+               to_meta=lambda _: "none"
+               ),
+    ],
+    vars={
+        "stl_path": "{{ output_models }}/baseplate/"
+                    "{{ plate }}/"
+                    "plate-{{ size}}-{{ plate }}.stl",
+    },
+    path="{{ stl_path }}"
+)
+
+
+def run_for_series(cmd_generator: CmdGenerator, check_exists=False, output_is_dir=False):
     for i, result in enumerate(cmd_generator.build_commands(), 1):
-        parent: Path = result.path.parent
-        if not parent.is_dir():
-            parent.mkdir(parents=True)
+        if output_is_dir:
+            if not result.path.is_dir():
+                result.path.mkdir(parents=True)
+        else:
+            parent: Path = result.path.parent
+            if not parent.is_dir():
+                parent.mkdir(parents=True)
 
         if check_exists and result.path.is_file():
             print(f"[{i}]  {result.path} already exists!")
@@ -207,6 +260,10 @@ slicer_bin_gen = cmd_gen_for_slicer(scad_bin_gen,
                                     "{{ output_gcode }}/bins/"
                                     "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}")
 
+slicer_base_gen = cmd_gen_for_slicer(scad_base_gen,
+                                     "{{ output_gcode }}/baseplate/"
+                                     "{{ filament_type }}-n{{ nozzle_diameter}}/{{ plate }}")
+
 
 if __name__ == '__main__':
     shared_meta = {
@@ -216,4 +273,7 @@ if __name__ == '__main__':
     CmdGenerator.global_meta.update(shared_meta)
 
     run_for_series(scad_bin_gen, check_exists=True)
-    run_for_series(slicer_bin_gen)
+    run_for_series(slicer_bin_gen, output_is_dir=True)
+
+    run_for_series(scad_base_gen, check_exists=True)
+    run_for_series(slicer_base_gen, output_is_dir=True)
