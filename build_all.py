@@ -200,7 +200,7 @@ scad_base_gen = CmdGenerator(
     ],
     [
         Factor("size",
-               expand_xy(1, 5, ((5, 5),)),
+               expand_xy(1, 6, ((6, 6),)),
                to_command=lambda value: ["-D", f"gridx={value[0]}",
                                          "-D", f"gridy={value[1]}"],
                to_meta=lambda value: f"{value[0]}x{value[1]}",
@@ -258,7 +258,8 @@ def run_for_series(cmd_generator: CmdGenerator, check_exists=False, output_is_di
 
 slicer_bin_gen = cmd_gen_for_slicer(scad_bin_gen,
                                     "{{ output_gcode }}/bins/"
-                                    "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}")
+                                    # On SD card it's quite helpful to split by size, based on how folder navigation works
+                                    "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}/{{ base_size }}")
 
 slicer_base_gen = cmd_gen_for_slicer(scad_base_gen,
                                      "{{ output_gcode }}/baseplate/"
