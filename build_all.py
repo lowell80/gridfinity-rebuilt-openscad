@@ -100,6 +100,27 @@ class CmdGenerator:
             yield CmdGeneratorResult(path, cmd_args, meta)
 
 
+def cmd_gen_for_slicer(scad_cmd: CmdGenerator, path_template):
+    return CmdGenerator(
+        [
+            SLICER_BIN,
+            "--export-gcode",
+            "--load", "profile_{{ filament_type }}_n{{ nozzle_diameter }}.ini",
+            "--output", "{{ gcode_path }}",
+            "{{ stl_path }}"
+        ],
+        [
+            Factor("model", scad_cmd),
+            Factor("filament_type", ("pla", "petg")),
+            Factor("nozzle_diameter", ("06",)),
+        ],
+        vars={
+            "gcode_path": path_template,
+        },
+        path="{{ gcode_path }}"
+    )
+
+
 scad_bin_gen = CmdGenerator(
     [
         OPENSCAD_BIN,
@@ -166,32 +187,7 @@ style_tab=5  (no tabs)
 style_hole=
 • (0) No holes
 • (1) Magnet holes only
-
-
 """
-
-
-slicer_bin_gen = CmdGenerator(
-    [
-        SLICER_BIN,
-        "--export-gcode",
-        # "--export-3mf",
-        "--load", "profile_{{ filament_type }}_n{{ nozzle_diameter }}.ini",
-        "--output", "{{ gcode_path }}",
-        "{{ stl_path }}"
-    ],
-    [
-        Factor("model", scad_bin_gen),
-        Factor("filament_type", ("pla", "petg")),
-        Factor("nozzle_diameter", ("06",)),
-    ],
-    vars={
-        # Add a "/models" layer in there...
-        "gcode_path": "{{ output_gcode }}/bins/"
-                      "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}"
-    },
-    path="{{ gcode_path }}"
-)
 
 
 def run_for_series(cmd_generator: CmdGenerator, check_exists=False):
@@ -205,6 +201,11 @@ def run_for_series(cmd_generator: CmdGenerator, check_exists=False):
         else:
             print(f"[{i}] {' '.join(result.cmd_args)}")
             call(result.cmd_args)
+
+
+slicer_bin_gen = cmd_gen_for_slicer(scad_bin_gen,
+                                    "{{ output_gcode }}/bins/"
+                                    "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}")
 
 
 if __name__ == '__main__':
