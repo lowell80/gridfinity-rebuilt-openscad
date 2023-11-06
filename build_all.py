@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import itertools
-import os
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from subprocess import call
-from typing import Any, Callable, Dict, Iterator, List
+from typing import Any, Callable, ClassVar, Iterator
 
 from jinja2 import Environment, StrictUndefined, FileSystemLoader
 
@@ -25,6 +24,9 @@ def jinja_render(template, **args):
 OPENSCAD_BIN = "/Applications/OpenSCAD.app/Contents/MacOS/OpenSCAD"
 # SLIC3R compatible
 SLICER_BIN = "/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
+
+OUTPUT_MODELS = "output/gridfinity/models"
+OUTPUT_GCODE = "output/gridfinity/gcode"
 
 
 def path_append_dash_suffix(path: PurePosixPath, value) -> PurePosixPath:
@@ -47,7 +49,7 @@ def expand_xy(min, max, block=()):
 class Factor:
     name: str = field()
     values: tuple | CmdGenerator = field()
-    to_command: Callable[[Any], List[str]] = lambda _: []
+    to_command: Callable[[Any], list[str]] = lambda _: []
     to_meta: Callable[[Any], str] = lambda v: str(v)
 
     def __iter__(self):
@@ -71,13 +73,15 @@ class CmdGenerator:
     vars: dict[str, str]
     path: str
 
+    global_meta: ClassVar[dict] = {}
+
     def product(self):
         return itertools.product(*(factor for factor in self.factors))
 
     def build_commands(self) -> Iterator[CmdGeneratorResult]:
         for combos in self.product():
             cmd_args = self.cmd.copy()
-            meta = {}
+            meta = dict(self.global_meta)
             for i, value in enumerate(combos):
                 factor = self.factors[i]
                 if isinstance(value, CmdGeneratorResult):
@@ -96,7 +100,7 @@ class CmdGenerator:
             yield CmdGeneratorResult(path, cmd_args, meta)
 
 
-scad_gen = CmdGenerator(
+scad_bin_gen = CmdGenerator(
     [
         OPENSCAD_BIN,
         "--export-format=binstl",
@@ -142,7 +146,9 @@ scad_gen = CmdGenerator(
                ),
     ],
     vars={
-        "stl_path": "output/gridfinity/models/bins/{{ base }}-{{ lip }}/bin-{{ base_size }}-{{ height }}h-{{ base }}-{{ lip }}.stl",
+        "stl_path": "{{ output_models }}/bins/"
+                    "{{ base }}-{{ lip }}/"
+                    "bin-{{ base_size }}-{{ height }}h-{{ base }}-{{ lip }}.stl",
     },
     path="{{ stl_path }}"
 )
@@ -165,7 +171,7 @@ style_hole=
 """
 
 
-slicer_gen = CmdGenerator(
+slicer_bin_gen = CmdGenerator(
     [
         SLICER_BIN,
         "--export-gcode",
@@ -175,34 +181,38 @@ slicer_gen = CmdGenerator(
         "{{ stl_path }}"
     ],
     [
-        Factor("model", scad_gen),
+        Factor("model", scad_bin_gen),
         Factor("filament_type", ("pla", "petg")),
         Factor("nozzle_diameter", ("06",)),
     ],
     vars={
         # Add a "/models" layer in there...
-        "gcode_path": "output/gridfinity/gcode/bins/{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}"
+        "gcode_path": "{{ output_gcode }}/bins/"
+                      "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}"
     },
     path="{{ gcode_path }}"
 )
 
 
-for i, result in enumerate(scad_gen.build_commands(), 1):
-    parent: Path = result.path.parent
-    if not parent.is_dir():
-        parent.mkdir(parents=True)
+def run_for_series(cmd_generator: CmdGenerator, check_exists=False):
+    for i, result in enumerate(cmd_generator.build_commands(), 1):
+        parent: Path = result.path.parent
+        if not parent.is_dir():
+            parent.mkdir(parents=True)
 
-    # if "lite" in str(cmd_args):
-    if result.path.is_file():
-        print(f"[{i}]  {result.path} already exists!")
-    else:
-        print(f"[{i}] {' '.join(result.cmd_args)}")
-        call(result.cmd_args)
+        if check_exists and result.path.is_file():
+            print(f"[{i}]  {result.path} already exists!")
+        else:
+            print(f"[{i}] {' '.join(result.cmd_args)}")
+            call(result.cmd_args)
 
 
-for i, result in enumerate(slicer_gen.build_commands(), 1):
-    if not result.path.is_dir():
-        result.path.mkdir(parents=True)
+if __name__ == '__main__':
+    shared_meta = {
+        "output_models": OUTPUT_MODELS,
+        "output_gcode": OUTPUT_GCODE,
+    }
+    CmdGenerator.global_meta.update(shared_meta)
 
-    print(f"[{i}] {' '.join(result.cmd_args)}")
-    call(result.cmd_args)
+    run_for_series(scad_bin_gen, check_exists=True)
+    run_for_series(slicer_bin_gen)
