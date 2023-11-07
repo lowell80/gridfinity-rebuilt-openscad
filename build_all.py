@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import itertools
+import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from subprocess import call
-from typing import Any, Callable, ClassVar, Iterator
+from typing import Any, Callable, ClassVar, Iterator, TypeVar, Union
 
-from jinja2 import Environment, StrictUndefined, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 jinja_env = Environment(autoescape=True,
                         undefined=StrictUndefined,
@@ -14,7 +15,10 @@ jinja_env = Environment(autoescape=True,
                         auto_reload=False)
 
 
-def jinja_render(template, **args):
+def jinja_render(template: T_CmdArgument, **args) -> T_CmdArgument:
+    if isinstance(template, CmdFile):
+        return CmdFile(jinja_render(template.path,  **args),
+                       template.purpose, template.type)
     if "{{" in template or "{%}" in template:
         return jinja_env.from_string(template).render(**args)
     else:
@@ -27,6 +31,43 @@ SLICER_BIN = "/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
 
 OUTPUT_MODELS = "output/gridfinity/models"
 OUTPUT_GCODE = "output/gridfinity/gcode"
+
+
+# Some simple GCODE parsing (to determine the max size of the build area)
+
+def parse_g1(command):
+    # G1 X90.046 Y151.62 E3.02855
+    match = re.search(r'^G1 X([\d.-]+) Y([\d.-]+)', command)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    # raise ValueError(f"Invalid G1 command:  {command}")
+    return 0, 0
+
+
+def max_plate_size(gcode_file, max_lines=50000):
+    min_x = min_y = max_x = max_y = 0
+    c = 0
+    for line in open(gcode_file):
+        c += 1
+        if c > max_lines:
+            break
+        if line.startswith("G1 X"):
+            try:
+                x, y = parse_g1(line)
+            except ValueError as e:
+                # print(e)
+                del e
+                continue
+
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+
+    return min_x, min_y, max_x, max_y
+
+
+#
 
 
 def path_append_dash_suffix(path: PurePosixPath, value) -> PurePosixPath:
@@ -61,15 +102,33 @@ class Factor:
 
 
 @dataclass
+class CmdFile:
+    path: str
+    purpose: str
+    type: str = "file"
+
+    def __str__(self):
+        return self.path
+
+
+T_CmdArgument = TypeVar("T_CmdArgument", str, CmdFile)
+CmdArgument = Union[str, CmdFile]
+
+
+@dataclass
 class CmdGeneratorResult:
     path: Path
-    cmd_args: list[str]
+    cmd_args: list[CmdArgument]
     meta: dict
+
+    @property
+    def cmd_args_str(self) -> list[str]:
+        return [str(arg) for arg in self.cmd_args]
 
 
 @dataclass
 class CmdGenerator:
-    cmd: list[str] = field()            # default_factory=list)
+    cmd: list[str | CmdFile] = field()            # default_factory=list)
     factors: list[Factor] = field()     # default_factory=list)
     vars: dict[str, str]
     path: str
@@ -131,10 +190,10 @@ def cmd_gen_for_slicer(scad_cmd: CmdGenerator, path_template, *,
         [
             SLICER_BIN,
             "--export-gcode",
-            "--load", "profile_{{ filament_type }}_n{{ nozzle_diameter }}.ini",
-            "--output", "{{ gcode_path }}",
+            "--load", CmdFile("profile_{{ filament_type }}_n{{ nozzle_diameter }}.ini", "input"),
+            "--output", CmdFile("{{ gcode_path }}", "output", "dir"),
             "--output-filename-format", "{input_filename_base}{{ name_suffix | default('') }}_{nozzle_diameter[0]}n_{layer_height}mm_{printing_filament_types}_{printer_model}_{print_time}.gcode",
-            "{{ stl_path }}"
+            CmdFile("{{ stl_path }}", "output")
         ],
         [
             Factor("model", scad_cmd),
@@ -151,8 +210,8 @@ scad_bin_gen = CmdGenerator(
         OPENSCAD_BIN,
         "--export-format=binstl",
         "--enable", "fast-csg",
-        "-o", "{{ stl_path }}",
-        "gridfinity-rebuilt-{{ 'lite' if base == 'lite' else 'bins' }}.scad",
+        "-o", CmdFile("{{ stl_path }}", "output"),
+        CmdFile("gridfinity-rebuilt-{{ 'lite' if base == 'lite' else 'bins' }}.scad", "input"),
     ],
     [
         Factor("base_size",
@@ -220,8 +279,8 @@ scad_base_gen = CmdGenerator(
         OPENSCAD_BIN,
         "--export-format=binstl",
         "--enable", "fast-csg",
-        "-o", "{{ stl_path }}",
-        "gridfinity-rebuilt-baseplate.scad",
+        "-o", CmdFile("{{ stl_path }}", "output"),
+        CmdFile("gridfinity-rebuilt-baseplate.scad", "input")
     ],
     [
         Factor("size",
@@ -277,8 +336,8 @@ def run_for_series(cmd_generator: CmdGenerator, check_exists=False, output_is_di
         if check_exists and result.path.is_file():
             print(f"[{i}]  {result.path} already exists!")
         else:
-            print(f"[{i}] {' '.join(result.cmd_args)}")
-            rc = call(result.cmd_args)
+            print(f"[{i}] {' '.join(result.cmd_args_str)}")
+            rc = call(result.cmd_args_str)
 
             print(f"RC = {rc}")
 
