@@ -51,6 +51,7 @@ class Factor:
     values: tuple | CmdGenerator = field()
     to_command: Callable[[Any], list[str]] = lambda _: []
     to_meta: Callable[[Any], str] = lambda v: str(v)
+    condition: Callable[[dict], bool] = field(default=None)
 
     def __iter__(self):
         if isinstance(self.values, CmdGenerator):
@@ -73,7 +74,20 @@ class CmdGenerator:
     vars: dict[str, str]
     path: str
 
+    filters: list[Callable[[Any, dict], bool]] = field(default_factory=list)
+
     global_meta: ClassVar[dict] = {}
+
+    def __post_init__(self):
+        for factor in self.factors:
+            if factor.condition:
+                self.filters.append(factor.condition)
+
+    def _filter(self, meta):
+        for fltr in self.filters:
+            if not fltr(meta):
+                return False
+        return True
 
     def product(self):
         return itertools.product(*(factor for factor in self.factors))
@@ -93,30 +107,41 @@ class CmdGenerator:
             meta.update({key: jinja_render(value, **meta)
                          for key, value in self.vars.items()})
 
-            cmd_args = [jinja_render(arg, **meta) for arg in cmd_args]
-            path = Path(jinja_render(self.path, **meta))
+            if self._filter(meta):
+                print(f"Keeping   {meta}")
+                cmd_args = [jinja_render(arg, **meta) for arg in cmd_args]
+                path = Path(jinja_render(self.path, **meta))
 
-            # path, cmd_args, meta = self.finalize_command(path, cmd_args, meta)
-            yield CmdGeneratorResult(path, cmd_args, meta)
+                # path, cmd_args, meta = self.finalize_command(path, cmd_args, meta)
+                yield CmdGeneratorResult(path, cmd_args, meta)
+            else:
+                print(f"Dropping!    {meta}")
 
 
-def cmd_gen_for_slicer(scad_cmd: CmdGenerator, path_template):
+def cmd_gen_for_slicer(scad_cmd: CmdGenerator, path_template, *,
+                       extra_factors=None, extra_vars=None):
+    v = {
+        "gcode_path": path_template,
+    }
+    if not extra_factors:
+        extra_factors = []
+    if extra_vars:
+        v.update(extra_vars)
     return CmdGenerator(
         [
             SLICER_BIN,
             "--export-gcode",
             "--load", "profile_{{ filament_type }}_n{{ nozzle_diameter }}.ini",
             "--output", "{{ gcode_path }}",
+            "--output-filename-format", "{input_filename_base}{{ name_suffix | default('') }}_{nozzle_diameter[0]}n_{layer_height}mm_{printing_filament_types}_{printer_model}_{print_time}.gcode",
             "{{ stl_path }}"
         ],
         [
             Factor("model", scad_cmd),
             Factor("filament_type", ("pla", "petg")),
             Factor("nozzle_diameter", ("06",)),
-        ],
-        vars={
-            "gcode_path": path_template,
-        },
+        ] + extra_factors,
+        vars=v,
         path="{{ gcode_path }}"
     )
 
@@ -253,13 +278,35 @@ def run_for_series(cmd_generator: CmdGenerator, check_exists=False, output_is_di
             print(f"[{i}]  {result.path} already exists!")
         else:
             print(f"[{i}] {' '.join(result.cmd_args)}")
-            call(result.cmd_args)
+            rc = call(result.cmd_args)
+
+            print(f"RC = {rc}")
 
 
-slicer_bin_gen = cmd_gen_for_slicer(scad_bin_gen,
-                                    "{{ output_gcode }}/bins/"
-                                    # On SD card it's quite helpful to split by size, based on how folder navigation works
-                                    "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}/{{ base_size }}")
+slicer_bin_gen = cmd_gen_for_slicer(
+    scad_bin_gen,
+    "{{ output_gcode }}/bins/"
+    # On SD card it's quite helpful to split by size, based on how folder navigation works
+    "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}/{{ base_size }}{{ '/multi' if print_count != '1' else '' }}",
+    extra_factors=[
+        Factor("print_count",
+                (1, 4),
+                to_command=lambda value: [
+                    "--duplicate", f"{value}"]
+                    # Sequential printing not really an option for anything taller than 2h :-(
+                    # "Some objects are too tall and cannot be printed without extruder collisions."
+                    # "--complete-objects"]
+                    if value > 1 else [],
+                condition=lambda meta:
+                    int(meta["print_count"]) == 1
+                    or meta["base_size"] in ("1x1", "1x2", "2x2"),
+                ),
+    ],
+    extra_vars={
+        # "name_suffix": "{{ '_' ~ print_count ~ 'x_SEQ' if print_count != '1' else ''}}",
+        "name_suffix": "{{ '_' ~ print_count ~ 'x' if print_count != '1' else ''}}",
+    })
+
 
 slicer_base_gen = cmd_gen_for_slicer(scad_base_gen,
                                      "{{ output_gcode }}/baseplate/"
