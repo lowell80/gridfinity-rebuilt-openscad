@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import itertools
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from subprocess import call
+from tempfile import TemporaryDirectory
 from typing import Any, Callable, ClassVar, Iterator, TypeVar, Union
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -17,7 +19,7 @@ jinja_env = Environment(autoescape=True,
 
 def jinja_render(template: T_CmdArgument, **args) -> T_CmdArgument:
     if isinstance(template, CmdFile):
-        return CmdFile(jinja_render(template.path,  **args),
+        return CmdFile(jinja_render(template.name,  **args),
                        template.purpose, template.type)
     if "{{" in template or "{%}" in template:
         return jinja_env.from_string(template).render(**args)
@@ -86,6 +88,60 @@ def expand_xy(min, max, block=()):
         if v not in block)
 
 
+def copy_scad_with_include(src_file, dest_dir):
+    for line in open(src_file):
+        if match := re.match(r'^include <(.*?)>$', line):
+            copy_scad_with_include(match.group(1), dest_dir)
+    print(f"SCAD COPY:  {src_file}   -> {dest_dir}")
+    shutil.copy(src_file, dest_dir)
+
+
+def run_command_isolated(cmd_args: list[CmdArgument]) -> int:
+    # return list of newly created files, and stdout/stderr
+    files = [arg for arg in cmd_args if isinstance(arg, CmdFile)]
+    input_files = [arg for arg in files if arg.purpose == "input"]
+    output_files = [arg for arg in files if arg.purpose == "output"]
+    with TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        for file in input_files:
+            if file.path.suffix == ".scad":
+                copy_scad_with_include(file.path, temp_path)
+            else:
+                print(
+                    f"  PREP:  copy {file.path} to {temp_path / file.path.name}")
+                shutil.copy(file.path, temp_path / file.path.name)
+
+        # Ensure any output directories already exists
+        for file in output_files:
+            if file.type == "dir":
+                (temp_path / file.path.name).mkdir()
+
+        # Run command
+        args = [arg.path.name if isinstance(
+            arg, CmdFile) else arg for arg in cmd_args]
+        rc = call(args, cwd=temp_dir)
+
+        for cmd_file in output_files:
+            if cmd_file.type == "file":
+                print(
+                    f"  POST:  copy [FILE] {temp_path / cmd_file.path.name} to {cmd_file.path}")
+                shutil.copy(temp_path / cmd_file.path.name, cmd_file.path)
+            else:
+                print(
+                    f"  POST:  copy [DIR] {temp_path / cmd_file.path.name} to {cmd_file.path}")
+                for path in (temp_path / cmd_file.path.name).glob("**/*"):
+                    print(
+                        f"  POST:  copy  [discovered-file]  {path} to {cmd_file.path}")
+                    if not cmd_file.path.is_dir():
+                        cmd_file.path.mkdir()
+                    shutil.copy(path, cmd_file.path)
+
+        # Grab STDOUT/STDERR
+        # Grab RC
+        return rc
+
+
 @dataclass(unsafe_hash=True)
 class Factor:
     name: str = field()
@@ -103,12 +159,16 @@ class Factor:
 
 @dataclass
 class CmdFile:
-    path: str
+    name: str
     purpose: str
     type: str = "file"
 
+    @property
+    def path(self) -> Path:
+        return Path(self.name)
+
     def __str__(self):
-        return self.path
+        return self.name
 
 
 T_CmdArgument = TypeVar("T_CmdArgument", str, CmdFile)
@@ -190,10 +250,11 @@ def cmd_gen_for_slicer(scad_cmd: CmdGenerator, path_template, *,
         [
             SLICER_BIN,
             "--export-gcode",
-            "--load", CmdFile("profile_{{ filament_type }}_n{{ nozzle_diameter }}.ini", "input"),
+            "--load", CmdFile(
+                "profile_{{ filament_type }}_n{{ nozzle_diameter }}.ini", "input"),
             "--output", CmdFile("{{ gcode_path }}", "output", "dir"),
             "--output-filename-format", "{input_filename_base}{{ name_suffix | default('') }}_{nozzle_diameter[0]}n_{layer_height}mm_{printing_filament_types}_{printer_model}_{print_time}.gcode",
-            CmdFile("{{ stl_path }}", "output")
+            CmdFile("{{ stl_path }}", "input")
         ],
         [
             Factor("model", scad_cmd),
@@ -211,7 +272,8 @@ scad_bin_gen = CmdGenerator(
         "--export-format=binstl",
         "--enable", "fast-csg",
         "-o", CmdFile("{{ stl_path }}", "output"),
-        CmdFile("gridfinity-rebuilt-{{ 'lite' if base == 'lite' else 'bins' }}.scad", "input"),
+        CmdFile(
+            "gridfinity-rebuilt-{{ 'lite' if base == 'lite' else 'bins' }}.scad", "input"),
     ],
     [
         Factor("base_size",
@@ -337,8 +399,8 @@ def run_for_series(cmd_generator: CmdGenerator, check_exists=False, output_is_di
             print(f"[{i}]  {result.path} already exists!")
         else:
             print(f"[{i}] {' '.join(result.cmd_args_str)}")
-            rc = call(result.cmd_args_str)
-
+            #  rc = call(result.cmd_args_str)
+            rc = run_command_isolated(result.cmd_args)
             print(f"RC = {rc}")
 
 
@@ -349,17 +411,17 @@ slicer_bin_gen = cmd_gen_for_slicer(
     "{{ filament_type }}-n{{ nozzle_diameter}}/{{ base }}-{{ lip }}/{{ base_size }}{{ '/multi' if print_count != '1' else '' }}",
     extra_factors=[
         Factor("print_count",
-                (1, 4),
-                to_command=lambda value: [
-                    "--duplicate", f"{value}"]
-                    # Sequential printing not really an option for anything taller than 2h :-(
-                    # "Some objects are too tall and cannot be printed without extruder collisions."
-                    # "--complete-objects"]
-                    if value > 1 else [],
-                condition=lambda meta:
-                    int(meta["print_count"]) == 1
-                    or meta["base_size"] in ("1x1", "1x2", "2x2"),
-                ),
+               (1, 4),
+               to_command=lambda value: [
+                   "--duplicate", f"{value}"]
+               # Sequential printing not really an option for anything taller than 2h :-(
+               # "Some objects are too tall and cannot be printed without extruder collisions."
+               # "--complete-objects"]
+               if value > 1 else [],
+               condition=lambda meta:
+               int(meta["print_count"]) == 1
+               or meta["base_size"] in ("1x1", "1x2", "2x2"),
+               ),
     ],
     extra_vars={
         # "name_suffix": "{{ '_' ~ print_count ~ 'x_SEQ' if print_count != '1' else ''}}",
