@@ -1,8 +1,6 @@
-
-ignore/
-gridfinity-rebuilt.json
-gridfinity-rebuilt-bins.json
-stl/
-batch/
-site/
-*.json
+*.stl
+*.3mf
+*.gcode
+output*/
+*.log
+.vscode
