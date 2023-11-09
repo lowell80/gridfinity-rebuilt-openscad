@@ -5,7 +5,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from subprocess import call
+from subprocess import run, CompletedProcess
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, ClassVar, Iterator, TypeVar, Union
 
@@ -47,6 +47,9 @@ def parse_g1(command):
 
 
 def max_plate_size(gcode_file, max_lines=50000):
+    # Possibly parse out this
+    # ; bed_shape = 0x0,200x0,200x200,0x200
+
     min_x = min_y = max_x = max_y = 0
     c = 0
     for line in open(gcode_file):
@@ -120,7 +123,7 @@ def run_command_isolated(cmd_args: list[CmdArgument]) -> int:
         # Run command
         args = [arg.path.name if isinstance(
             arg, CmdFile) else arg for arg in cmd_args]
-        rc = call(args, cwd=temp_dir)
+        rc = run(args, cwd=temp_dir).returncode
 
         for cmd_file in output_files:
             if cmd_file.type == "file":
@@ -184,6 +187,16 @@ class CmdGeneratorResult:
     @property
     def cmd_args_str(self) -> list[str]:
         return [str(arg) for arg in self.cmd_args]
+
+
+@dataclass
+class CmdOutput:
+    cmd: CmdGeneratorResult
+    process_results: CompletedProcess
+
+
+
+
 
 
 @dataclass
