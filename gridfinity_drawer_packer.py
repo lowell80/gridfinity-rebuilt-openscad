@@ -60,7 +60,7 @@ class Bin(Size):
 @dataclass
 class Container:
     size: Size
-    array: list[list[Bin | None]] = field(default_factory=list, init=False)
+    array: list[list[int | None]] = field(default_factory=list, init=False)
     _contents: list[tuple[Point, Bin]] = field(
         default_factory=list, init=False)
     _fill: int = 0
@@ -99,21 +99,23 @@ class Container:
         return self.array[x][y] is not None
 
     def overlaps(self, bin: Bin, pos_x: int, pos_y: int) -> bool:
+        return any(self.populated(x, y)
+                   for x in range(pos_x, pos_x+bin.x)
+                   for y in range(pos_y, pos_y+bin.y))
+
+    def place_bin(self, bin: Bin, x, y) -> bool:
         try:
-            return any(self.populated(x, y)
-                       for x in range(pos_x, pos_x+bin.x)
-                       for y in range(pos_y, pos_y+bin.y))
+            if self.overlaps(bin, x, y):
+                return False
         except IndexError:
             return False
 
-    def place_bin(self, bin: Bin, x, y) -> bool:
-        if self.overlaps(bin, x, y):
-            return False
-
+        bin_id = len(self._contents)
+        self._contents.append((Point(x, y), bin))
         for x_ in range(x, x+bin.x):
             for y_ in range(y, y+bin.y):
-                self.array[x_][y_] = bin
-        self._contents.append((Point(x, y), bin))
+                self.array[x_][y_] = bin_id
+
         self._fill += bin.area
         return True
 
@@ -124,18 +126,28 @@ class Container:
                     return Point(x, y)
         return None
 
+    def asci_art(self, output=None):
+        print("   | ", end="")
+        print("----" * self.size.y)
+        for x, row in enumerate(self.array):
+            print(f"{x:02} | ", end="", file=output)
+            for cell in row:
+                value = "..." if cell is None else f"{cell:03x}"
+                print(f"{value} ", end="", file=output)
+            print("", file=output)
+
 
 def test_container_bin_placement():
     """ Run:
     pytest gridfinity_drawer_packer.py
     """
-
-    c = Container(Size(100, 100))
+    c = Container(Size(40, 31))
     b = Bin(2, 2)
-
+    b_ = Bin(1, 1)
     assert c.find_next_open() == Point(0, 0)
     assert not c.overlaps(b, 0, 0)
     assert c.place_bin(b, 0, 0)
+    assert c.populated(0, 0), "Expect point 0,0 to be populated"
     assert c.overlaps(b, 0, 0)
     assert c.overlaps(b, 1, 1)
     assert not c.overlaps(b, 2, 2)
@@ -147,23 +159,29 @@ def test_container_bin_placement():
         "Confirm that the same point can be returned if nothing is at 'start'"
 
     n = c.find_next_open()
+    assert isinstance(n, Point)
     assert c.place_bin(b, n.x, n.y)
 
     count = 0
     while (n := c.find_next_open(n)) and count < 10000:
         count += 1
-        c.place_bin(b, n.x, n.y)
+        if not c.place_bin(b, n.x, n.y):
+            c.place_bin(b_, n.x, n.y)
         '''
         # No need to check this here.  Look for None returned from find_next_open(), but that only works because b equally goes into c.
         if c.filled() == 1:
             break
         '''
 
-    assert len(c._contents) == (c.size.area / b.area)
+
+    # No longer '==' as not using fixed bin size...
+    assert len(c._contents) >= (c.size.area / b.area)
     # print(c._contents)
 
     assert c.filled() == c.debug_filled1()
     assert c.filled() == c.debug_filled2()
+
+    c.asci_art()
 
 
 if __name__ == '__main__':
