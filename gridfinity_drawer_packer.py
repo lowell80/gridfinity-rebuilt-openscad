@@ -17,6 +17,8 @@ PyMesh:   Geometry Processing Library for Python  https://pymesh.readthedocs.io/
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import combinations_with_replacement, product
+from typing import Iterable
 
 
 '''
@@ -46,6 +48,23 @@ class Size:
     x: int
     y: int
 
+    def swap(self) -> Size:
+        return Size(self.y, self.x)
+
+    def side_gt(self, length: int) -> bool:
+        return self.x > length or self.y > length
+
+    def side_lt(self, length: int) -> bool:
+        return self.x < length or self.y < length
+
+    def __gt__(self, other: Size) -> bool:
+        """ object is larger (in either dimension) """
+        return self.x > other.x or self.y > other.y
+
+    def __lt__(self, other: Size) -> bool:
+        """ object smaller (in either direction) """
+        return self.x < other.x or self.y < other.y
+
     @property
     def area(self):
         return self.x * self.y
@@ -63,7 +82,7 @@ class Container:
     array: list[list[int | None]] = field(default_factory=list, init=False)
     _contents: list[tuple[Point, Bin]] = field(
         default_factory=list, init=False)
-    _fill: int = 0
+    _fill: int = field(default=0, init=False)
 
     def __post_init__(self):
         self.clear()
@@ -88,7 +107,8 @@ class Container:
 
     def debug_filled2(self) -> float:
         found = sum(bin.area for _, bin in self._contents)
-        ''' # Why is this sum() slower than the for loop?  t should be 2-3x faster.... Just keep this out of any inner loop and we don't care...
+        ''' # Why is sum() slower than the for loop? it should be 2-3x faster. 
+        # Just keep this out of any inner loop and we don't care...
         found = 0
         for bin, _ in self._contents:
             found += bin.area
@@ -137,6 +157,45 @@ class Container:
             print("", file=output)
 
 
+def combinations_of_sizes(max_size: Size,
+                          min_side: int = 1
+                          ) -> Iterable[Size]:
+    """ Return all possible combinations of bin sizes """
+    for x, y in combinations_with_replacement(
+            range(max(max_size.x, max_size.y), 0, -1), 2):
+        n = Size(x, y)
+        if n.side_gt(min_side) and n < max_size and n < max_size.swap():
+            yield n
+        # somehow returning sizes that are too big....
+
+
+def combination_with_sizes_for_area(max_size: Size,
+                                    total_area: int,
+                                    /,
+                                    min_size: Size = Size(2, 2),
+                                    ) -> Iterable[tuple[Size, int]]:
+    for bin_size in combinations_of_sizes(max_size, 1):
+        # min_size ...
+        max_count = total_area // bin_size.area // 2
+        yield bin_size, max_count
+
+
+def combinations_that_fit_in_area(combinations: list[tuple[Size, int]],
+                                  area: int
+                                  ) -> Iterable[tuple[Size, int]]:
+    inputs = []
+    for (bin, count) in combinations:
+        x = [(bin, i) for i in range(count+1)]
+        inputs.append(x)
+    for pair in product(*inputs):
+        total = sum(s.area * c for s, c in pair)
+        if total == area:
+            yield [(s, c) for s, c in pair if c > 0]   # type: ignore
+
+
+
+
+
 def test_container_bin_placement():
     """ Run:
     pytest gridfinity_drawer_packer.py
@@ -173,7 +232,6 @@ def test_container_bin_placement():
             break
         '''
 
-
     # No longer '==' as not using fixed bin size...
     assert len(c._contents) >= (c.size.area / b.area)
     # print(c._contents)
@@ -184,5 +242,41 @@ def test_container_bin_placement():
     c.asci_art()
 
 
+
+def test_combinations_of_sizes():
+    max_size = Size(5, 4)
+    combos = list(combinations_of_sizes(max_size))
+    assert max_size in combos
+    assert Size(5, 5) not in combos
+
+
+
+def test_placement_kitchen_drawer528x381():
+    base_size_u = 42
+    size_mm = Size(528, 381)
+    size_u = Size(size_mm.x // base_size_u, size_mm.y // base_size_u)
+    max_printable_u = Size(5, 4)
+
+    possible_sizes = []
+    for bin_size, count in combination_with_sizes_for_area(max_printable_u,
+                                                           size_u.area):
+        possible_sizes.extend((bin_size,) * count)
+
+
+    all_combos = combination_with_sizes_for_area(max_printable_u, size_u.area)
+    volumetrically_matching_combos = combinations_that_fit_in_area(all_combos, size_u.area)
+
+    for i in volumetrically_matching_combos:
+        print(i)
+
+    # container = Container(size_u)
+    # container.filled
+
+
+
+
 if __name__ == '__main__':
     test_container_bin_placement()
+    test_combinations_of_sizes()
+
+    test_placement_kitchen_drawer528x381()
